@@ -1,0 +1,27 @@
+const socket = io();
+const $ = (id) => document.getElementById(id);
+let role = 'guest', roomCode = '', playerName = '', opponentName = 'Opponent', running = false;
+let paddle = 50, otherPaddle = 50, state = { ball: { x: 50, y: 50 }, score: [0, 0] }, keys = {};
+const show = (id) => { ['home','lobby','game'].forEach((s) => $(s).classList.toggle('hidden', s !== id)); };
+const initials = (name) => (name || '?').slice(0, 1).toUpperCase();
+function setError(id, message) { $(id).textContent = message || ''; }
+function nameValue() { return $('name').value.trim() || 'Player'; }
+socket.on('connect', () => { $('connection').textContent = 'ONLINE'; $('connection').previousElementSibling.style.background = '#65b879'; });
+socket.on('disconnect', () => { $('connection').textContent = 'OFFLINE'; $('connection').previousElementSibling.style.background = '#e7a84f'; });
+$('create').onclick = () => { playerName = nameValue(); role = 'host'; socket.emit('lobby:create', { name: playerName }); };
+$('join').onclick = () => { playerName = nameValue(); const code = $('room').value.trim(); if (code.length < 4) return setError('home-error', 'Enter the room code first.'); role = 'guest'; socket.emit('lobby:join', { name: playerName, code }); };
+$('room').onkeydown = (e) => { if (e.key === 'Enter') $('join').click(); }; $('name').onkeydown = (e) => { if (e.key === 'Enter') $('create').click(); };
+socket.on('lobby:created', ({ code }) => enterLobby(code)); socket.on('lobby:joined', ({ code }) => enterLobby(code));
+function enterLobby(code) { roomCode = code; $('lobby-code').textContent = code; $('you-name').textContent = playerName; $('you-avatar').textContent = initials(playerName); $('game-code').textContent = code; show('lobby'); }
+socket.on('lobby:update', ({ players, started }) => { if (!players) return; if (players[1]) { opponentName = players[1].name; $('friend-name').textContent = opponentName; $('start').disabled = role !== 'host'; $('start').textContent = role === 'host' ? 'Start the game →' : 'Host is readying the game'; $('copy-note').textContent = 'Both players are in. The host can start when ready.'; } else { $('friend-name').textContent = 'Waiting…'; $('start').disabled = true; $('copy-note').textContent = 'Waiting for another player to join…'; } if (started) beginGame(); });
+socket.on('lobby:error', (message) => { if (!$('game').classList.contains('hidden')) { show('lobby'); setError('lobby-error', message); } else setError('home-error', message); });
+$('start').onclick = () => socket.emit('game:start'); $('copy').onclick = async () => { await navigator.clipboard?.writeText(roomCode); $('copy-note').textContent = 'Room code copied — send it to your friend.'; };
+function beginGame() { $('left-label').textContent = role === 'host' ? playerName : opponentName; $('right-label').textContent = role === 'host' ? opponentName : playerName; show('game'); if (!running) { running = true; requestAnimationFrame(loop); } }
+function move(v) { paddle = Math.max(10, Math.min(90, v)); socket.emit('game:paddle', paddle); }
+window.addEventListener('keydown', (e) => { if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { keys[e.key] = true; e.preventDefault(); } }); window.addEventListener('keyup', (e) => { keys[e.key] = false; });
+$('court').addEventListener('mousemove', (e) => { const r = $('court').getBoundingClientRect(); move(((e.clientY - r.top) / r.height) * 100); });
+function loop() { if (keys.ArrowUp) move(paddle - 1.5); if (keys.ArrowDown) move(paddle + 1.5); draw(); requestAnimationFrame(loop); }
+function draw() { const c = $('court'), x = c.getContext('2d'), w = c.width, h = c.height; x.clearRect(0,0,w,h); x.fillStyle='#e9eee9'; x.fillRect(0,0,w,h); x.setLineDash([8,14]); x.strokeStyle='#cfd8d1'; x.lineWidth=2; x.beginPath(); x.moveTo(w/2,20); x.lineTo(w/2,h-20); x.stroke(); x.setLineDash([]); const py = (role === 'host' ? paddle : otherPaddle) / 100 * h; const oy = (role === 'host' ? otherPaddle : paddle) / 100 * h; x.fillStyle='#1f74d1'; x.roundRect(25, py-48, 10, 96, 5); x.fill(); x.fillStyle='#ed765d'; x.roundRect(w-35, oy-48, 10, 96, 5); x.fill(); const bx = state.ball.x/100*w, by=state.ball.y/100*h; x.fillStyle='#17202b'; x.beginPath(); x.arc(bx,by,8,0,Math.PI*2); x.fill(); $('score').textContent = `${state.score[0]} — ${state.score[1]}`; }
+socket.on('game:paddle', (v) => { otherPaddle = v; }); socket.on('game:state', (s) => { state = s; if (Math.max(...s.score) >= 7) { $('winner-title').textContent = (role === 'host' ? s.score[0] > s.score[1] : s.score[1] > s.score[0]) ? 'You win!' : 'Good game!'; $('winner').classList.remove('hidden'); } });
+$('leave').onclick = $('game-leave').onclick = $('winner-leave').onclick = () => location.reload(); $('rematch').onclick = () => { $('winner').classList.add('hidden'); socket.emit('game:rematch'); }; socket.on('game:rematch', () => { state.score=[0,0]; $('winner').classList.add('hidden'); });
+setInterval(() => { if (role !== 'host' || !running || Math.max(...state.score) >= 7) return; if (!state.ball.vx) { state.ball={x:50,y:50,vx:.7,vy:.35}; } const b=state.ball; b.x+=b.vx; b.y+=b.vy; if(b.y<3||b.y>97)b.vy*=-1; const lp=paddle, rp=otherPaddle; if(b.x<6&&Math.abs(b.y-lp)<11&&b.vx<0){b.vx=Math.abs(b.vx)*1.04; b.vy+=(b.y-lp)*.03;} if(b.x>94&&Math.abs(b.y-rp)<11&&b.vx>0){b.vx=-Math.abs(b.vx)*1.04; b.vy+=(b.y-rp)*.03;} if(b.x<-2){state.score[1]++; b.x=50;b.y=50;b.vx=.7;b.vy=.35;} if(b.x>102){state.score[0]++;b.x=50;b.y=50;b.vx=-.7;b.vy=-.35;} socket.emit('game:state', state); }, 25);
